@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Activity, Banknote, Boxes, Download, LayoutDashboard, Menu, Plus, RefreshCw, Search, ShoppingBag, Users, Wallet, Wifi, WifiOff, X } from 'lucide-react'
 import { all, put, enqueue, exportBackup } from './db'
-import { supabase } from './lib/supabase'
+import { supabase } from './lib/supabaseClient.js'
 
 const money = n => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 }).format(Number(n || 0))
 const id = () => crypto.randomUUID()
