@@ -200,34 +200,48 @@ setReady(true)
   }, [transactions])
 
   
+
 async function saveRecord(store, entity, record) {
-  // Lưu cục bộ trước để vẫn dùng được khi offline.
-  await put(store, record)
-  await enqueue(entity, record)
-  await refresh()
-
-  setModal('')
-
-  if (!navigator.onLine) {
-    setToast('Đã lưu trên thiết bị. Chưa đồng bộ vì đang offline.')
-    return
-  }
-
   try {
-    const { data: { user }, error: authError } =
+    // 1. Lưu dữ liệu trên thiết bị
+    await put(store, record)
+    await enqueue(entity, record)
+    await refresh()
+    setModal('')
+
+    // 2. Kiểm tra kết nối mạng
+    if (!navigator.onLine) {
+      setToast('Đã lưu trên thiết bị. Chưa đồng bộ vì đang offline.')
+      return
+    }
+
+    // 3. Kiểm tra tài khoản Supabase
+    const { data, error: authError } =
       await supabase.auth.getUser()
 
     if (authError) throw authError
-    if (!user) throw new Error('Bạn chưa đăng nhập Supabase.')
 
+    const user = data?.user
+
+    if (!user) {
+      setToast(
+        'Đã lưu trên thiết bị nhưng chưa đồng bộ: Bạn chưa đăng nhập Supabase.'
+      )
+      return
+    }
+
+    // 4. Xác định bảng cần lưu
     const table = {
       customer: 'customers',
       product: 'products',
       transaction: 'transactions'
     }[entity]
 
-    if (!table) throw new Error('Loại dữ liệu không hợp lệ.')
+    if (!table) {
+      throw new Error('Loại dữ liệu không hợp lệ.')
+    }
 
+    // 5. Ghi dữ liệu lên Supabase
     const row = toCloudRow(entity, record, user.id)
 
     const { error } = await supabase
@@ -238,9 +252,15 @@ async function saveRecord(store, entity, record) {
 
     setToast('Đã lưu và đồng bộ lên Supabase thành công.')
   } catch (error) {
-    console.error('FamilyBiz sync error:', error)
-    setToast(`Đã lưu trên thiết bị nhưng chưa đồng bộ: ${error.message}`)
+    console.error('FamilyBiz save/sync error:', error)
+
+    setToast(
+      `Có lỗi khi lưu hoặc đồng bộ: ${error?.message || 'Lỗi không xác định'}`
+    )
   }
+
+  setTimeout(() => setToast(''), 6000)
+}
 
   setTimeout(() => setToast(''), 5000)
 }
