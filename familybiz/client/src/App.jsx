@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Activity, Banknote, Boxes, Download, LayoutDashboard, Menu, Plus, RefreshCw, Search, ShoppingBag, Users, Wallet, Wifi, WifiOff, X } from 'lucide-react'
 import { all, put, enqueue, exportBackup } from './db'
+import { supabase } from './lib/supabase'
 
 const money = n => new Intl.NumberFormat('vi-VN', { style: 'currency', currency: 'VND', maximumFractionDigits: 0 }).format(Number(n || 0))
 const id = () => crypto.randomUUID()
@@ -19,6 +20,95 @@ const seed = {
     { id: 't-demo-1', type: 'SALE', customerId: 'c-demo-1', amount: 450000, paidAmount: 200000, date: today(), note: 'Giao dịch mẫu', items: [], createdAt: new Date().toISOString() },
     { id: 't-demo-2', type: 'EXPENSE', customerId: '', amount: 80000, paidAmount: 80000, date: today(), note: 'Chi phí vận chuyển mẫu', items: [], createdAt: new Date().toISOString() }
   ]
+}
+
+
+const isUuid = value =>
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value || '')
+
+function toCloudRow(entity, r, userId) {
+  const common = {
+    id: r.id,
+    user_id: userId,
+    created_at: r.createdAt || new Date().toISOString()
+  }
+
+  if (entity === 'customer') {
+    return {
+      ...common,
+      name: r.name,
+      phone: r.phone || '',
+      notes: r.note || '',
+      address: r.address || ''
+    }
+  }
+
+  if (entity === 'product') {
+    return {
+      ...common,
+      name: r.name,
+      sku: r.code || '',
+      unit: r.unit || '',
+      cost_price: Number(r.costPrice || 0),
+      selling_price: Number(r.sellingPrice || 0),
+      price: Number(r.sellingPrice || 0),
+      stock: 0,
+      notes: r.note || ''
+    }
+  }
+
+  return {
+    ...common,
+    type: r.type,
+    description: r.note || '',
+    amount: Number(r.amount || 0),
+    customer_id: isUuid(r.customerId) ? r.customerId : null,
+    product_id: null,
+    payment_status:
+      Number(r.paidAmount || 0) >= Number(r.amount || 0)
+        ? 'PAID'
+        : 'UNPAID',
+    paid_amount: Number(r.paidAmount || 0),
+    date: r.date || new Date().toISOString().slice(0, 10),
+    notes: r.note || ''
+  }
+}
+
+function fromCloudRow(entity, r) {
+  if (entity === 'customer') {
+    return {
+      id: r.id,
+      name: r.name,
+      phone: r.phone || '',
+      address: r.address || '',
+      note: r.notes || '',
+      createdAt: r.created_at
+    }
+  }
+
+  if (entity === 'product') {
+    return {
+      id: r.id,
+      code: r.sku || '',
+      name: r.name,
+      unit: r.unit || '',
+      costPrice: Number(r.cost_price || 0),
+      sellingPrice: Number(r.selling_price ?? r.price ?? 0),
+      createdAt: r.created_at
+    }
+  }
+
+  return {
+    id: r.id,
+    type: r.type,
+    customerId: r.customer_id || '',
+    amount: Number(r.amount || 0),
+    paidAmount: Number(r.paid_amount || 0),
+    date: r.date,
+    note: r.notes || r.description || '',
+    items: [],
+    createdAt: r.created_at
+  }
 }
 
 const nav = [
@@ -44,6 +134,31 @@ export default function App() {
     setCustomers(c); setProducts(p); setTransactions(t)
   }
 
+
+async function loadCloudData() {
+  const tables = [
+    ['customers', 'customer'],
+    ['products', 'product'],
+    ['transactions', 'transaction']
+  ]
+
+  for (const [table, entity] of tables) {
+    const { data, error } = await supabase
+      .from(table)
+      .select('*')
+
+    if (error) throw error
+
+    const store = table
+
+    for (const row of data || []) {
+      await put(store, fromCloudRow(entity, row))
+    }
+  }
+
+  await refresh()
+}
+
   useEffect(() => {
     const closeModal = () => setModal('')
     window.addEventListener('close-modal', closeModal)
@@ -58,8 +173,14 @@ export default function App() {
         for (const item of seed.products) await put('products', item)
         for (const item of seed.transactions) await put('transactions', item)
       }
-      await refresh()
-      setReady(true)
+      try {
+  await loadCloudData()
+} catch (error) {
+  console.error('Không tải được dữ liệu Supabase:', error)
+}
+
+await refresh()
+setReady(true)
     }
     start()
     const on = () => setOnline(true)
@@ -78,14 +199,51 @@ export default function App() {
     return { sales, expenses, received, debt, profit: sales - expenses }
   }, [transactions])
 
-  async function saveRecord(store, entity, record) {
-    await put(store, record)
-    await enqueue(entity, record)
-    await refresh()
-    setModal('')
-    setToast('Đã lưu trên thiết bị' + (online ? '. Bản demo chưa kết nối máy chủ đồng bộ.' : ' khi offline. Sẽ cần đồng bộ khi có mạng.'))
-    setTimeout(() => setToast(''), 3800)
+  
+async function saveRecord(store, entity, record) {
+  // Lưu cục bộ trước để vẫn dùng được khi offline.
+  await put(store, record)
+  await enqueue(entity, record)
+  await refresh()
+
+  setModal('')
+
+  if (!navigator.onLine) {
+    setToast('Đã lưu trên thiết bị. Chưa đồng bộ vì đang offline.')
+    return
   }
+
+  try {
+    const { data: { user }, error: authError } =
+      await supabase.auth.getUser()
+
+    if (authError) throw authError
+    if (!user) throw new Error('Bạn chưa đăng nhập Supabase.')
+
+    const table = {
+      customer: 'customers',
+      product: 'products',
+      transaction: 'transactions'
+    }[entity]
+
+    if (!table) throw new Error('Loại dữ liệu không hợp lệ.')
+
+    const row = toCloudRow(entity, record, user.id)
+
+    const { error } = await supabase
+      .from(table)
+      .upsert(row, { onConflict: 'id' })
+
+    if (error) throw error
+
+    setToast('Đã lưu và đồng bộ lên Supabase thành công.')
+  } catch (error) {
+    console.error('FamilyBiz sync error:', error)
+    setToast(`Đã lưu trên thiết bị nhưng chưa đồng bộ: ${error.message}`)
+  }
+
+  setTimeout(() => setToast(''), 5000)
+}
 
   async function backup() {
     const data = await exportBackup()

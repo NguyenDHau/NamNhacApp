@@ -9,12 +9,13 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@supabase/supabase-js": "^2.117.3",
     "@vitejs/plugin-react": "latest",
-    "vite": "latest",
+    "idb": "latest",
+    "lucide-react": "latest",
     "react": "latest",
     "react-dom": "latest",
-    "idb": "latest",
-    "lucide-react": "latest"
+    "vite": "latest"
   },
   "devDependencies": {
     "vite-plugin-pwa": "latest"
